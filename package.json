@@ -1,0 +1,24 @@
+{
+  "name": "telegram-premium-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot with premium features",
+  "main": "src/bot.js",
+  "scripts": {
+    "start": "node src/bot.js",
+    "dev": "nodemon src/bot.js",
+    "codegen:pw": "node codegen.js",
+    "codegen:pptr": "node codegen_puppeteer.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.12.2",
+    "puppeteer": "^24.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "cheerio": "^1.0.0-rc.12",
+    "user-agents": "^1.1.336"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22",
+    "playwright": "^1.47.0"
+  }
+}
