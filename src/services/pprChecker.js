@@ -1,0 +1,369 @@
+const { toSmallCaps, formatTableHeader, formatDataRow, formatStatus } = require('../utils/textFormatter');
+
+class PPRChecker {
+    constructor(page) {
+        this.page = page;
+        this.pprUrl = 'https://portal.rajawalielastis.com/bo/transaksi/p_permintaan';
+        this.itemsPerPage = 5; // Show 5 items per telegram message
+        this.cachedData = null;
+        this.lastCheckedData = null; // Store last checked data for comparison
+    }
+
+    async fetchPPRData(pageNum = 1, forceRefresh = false) {
+        try {
+            // Use cached data if available and not forcing refresh
+            if (this.cachedData && !forceRefresh) {
+                console.log('📋 Using cached PPR data...');
+                const totalItems = this.cachedData.length;
+                const totalPages = Math.ceil(totalItems / this.itemsPerPage);
+                
+                // Ensure valid page number
+                pageNum = Math.max(1, Math.min(pageNum, totalPages));
+                
+                const startIdx = (pageNum - 1) * this.itemsPerPage;
+                const endIdx = Math.min(startIdx + this.itemsPerPage, totalItems);
+                
+                return {
+                    success: true,
+                    data: this.cachedData.slice(startIdx, endIdx),
+                    pagination: {
+                        currentPage: pageNum,
+                        totalPages,
+                        totalItems,
+                        startItem: startIdx + 1,
+                        endItem: endIdx
+                    }
+                };
+            }
+
+            // Fetch fresh data from web (first time or forced refresh)
+            console.log('📊 Fetching fresh PPR data from web...');
+            await this.page.goto(this.pprUrl, {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
+            
+            // Set to 100 entries and get all data
+            await this.page.waitForSelector('div.dataTables_length select');
+            await this.page.select('div.dataTables_length select', '100');
+            
+            // Wait for table to update
+            await new Promise(r => setTimeout(r, 2000));
+            
+            // Store all data in cache
+            this.cachedData = await this.page.evaluate(() => {
+                return Array.from(document.querySelectorAll('.table tbody tr'))
+                    .map(row => {
+                        const cells = row.querySelectorAll('td');
+                        return cells.length >= 5 ? {
+                            number: cells[1]?.textContent?.trim() || '',
+                            location: cells[2]?.textContent?.trim() || '',
+                            date: cells[3]?.textContent?.trim() || '',
+                            status: cells[4]?.textContent?.trim() || ''
+                        } : null;
+                    })
+                    .filter(item => item && item.number);
+            });
+
+            // Use cached data for pagination
+            const totalItems = this.cachedData.length;
+            const totalPages = Math.ceil(totalItems / this.itemsPerPage);
+            const startIdx = (pageNum - 1) * this.itemsPerPage;
+            const endIdx = Math.min(startIdx + this.itemsPerPage, totalItems);
+
+            console.log(`✅ Cached ${totalItems} fresh PPR entries`);
+            
+            return {
+                success: true,
+                data: this.cachedData.slice(startIdx, endIdx),
+                pagination: {
+                    currentPage: pageNum,
+                    totalPages,
+                    totalItems,
+                    startItem: startIdx + 1,
+                    endItem: endIdx
+                }
+            };
+        } catch (error) {
+            console.error('❌ Error fetching PPR data:', error);
+            
+            // Attempt to get data even if waiting times out
+            try {
+                console.log('⚠️ Timeout occurred, attempting to get available data...');
+                this.cachedData = await this.page.evaluate(() => {
+                    return Array.from(document.querySelectorAll('.table tbody tr'))
+                        .map(row => {
+                            const cells = row.querySelectorAll('td');
+                            return {
+                                number: cells[1]?.textContent?.trim() || '',
+                                location: cells[2]?.textContent?.trim() || '',
+                                date: cells[3]?.textContent?.trim() || '',
+                                status: cells[4]?.textContent?.trim() || ''
+                            };
+                        })
+                        .filter(item => item.number && item.location);
+                });
+
+                if (this.cachedData && this.cachedData.length > 0) {
+                    const totalItems = this.cachedData.length;
+                    const startIdx = (pageNum - 1) * this.itemsPerPage;
+                    const endIdx = Math.min(startIdx + this.itemsPerPage, totalItems);
+                    
+                    return {
+                        success: true,
+                        data: this.cachedData.slice(startIdx, endIdx),
+                        pagination: {
+                            currentPage: pageNum,
+                            totalPages: Math.ceil(totalItems / this.itemsPerPage),
+                            totalItems: totalItems,
+                            startItem: startIdx + 1,
+                            endItem: endIdx
+                        }
+                    };
+                }
+            } catch (fallbackError) {
+                console.error('❌ Fallback attempt failed:', fallbackError);
+            }
+            
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+
+    formatPPRResult(data, pagination) {
+        if (!data || data.length === 0) return '❌ ɴᴏ ᴘᴘʀ ᴅᴀᴛᴀ ғᴏᴜɴᴅ';
+
+        const header = `😁 ᴘᴘʀ ʟɪsᴛ (ᴘᴀɢᴇ ${pagination.currentPage}/${pagination.totalPages})\n` +
+                      `sʜᴏᴡɪɴɢ ɪᴛᴇᴍs ${pagination.startItem}-${pagination.endItem} ᴏғ ${pagination.totalItems}\n\n`;
+        
+        const items = data.map(item => 
+            `📅 ${toSmallCaps(item.number)}\n` +
+            `📝 ${toSmallCaps(item.location)}\n` +
+            `🏪 ${toSmallCaps(item.date)}\n` +
+            `📊 sᴛᴀᴛᴜs: ${formatStatus(item.status)}`
+        ).join('\n\n');
+
+        return header + items;
+    }
+
+    async getDetailScreenshot(pprId) {
+        try {
+            console.log(`📷 Getting screenshot for PPR ID: ${pprId}`);
+            
+            // Find and click the detail button
+            const detailButton = await this.page.evaluate((id) => {
+                // Look for detail button with the specific ID
+                const links = Array.from(document.querySelectorAll('a.detail-doc-do, a.detail-doc-permintaan'));
+                const link = links.find(el => {
+                    const row = el.closest('tr');
+                    const idCell = row?.querySelector('td:nth-child(2)');
+                    return idCell?.textContent?.trim() === id;
+                });
+                
+                if (link) {
+                    link.click();
+                    return true;
+                }
+                return false;
+            }, pprId);
+
+            if (!detailButton) {
+                console.log('❌ Detail button not found for ID:', pprId);
+                return null;
+            }
+
+            // Wait for modal to open
+            console.log('⌛ Waiting for modal to open...');
+            await this.page.waitForSelector('#DetailModal', { 
+                visible: true,
+                timeout: 5000 
+            });
+            
+            // Wait for content to load
+            await new Promise(r => setTimeout(r, 1000));
+
+            // Take screenshot of the modal content
+            console.log('📸 Taking screenshot...');
+            const element = await this.page.$('#DetailModal_Body');
+            if (!element) {
+                console.log('❌ Modal content not found');
+                return null;
+            }
+
+            const screenshot = await element.screenshot({
+                type: 'png',
+                omitBackground: true
+            });
+
+            // Close the modal
+            await this.page.evaluate(() => {
+                const closeBtn = document.querySelector('#DetailModal button.btn-close');
+                if (closeBtn) closeBtn.click();
+            });
+
+            console.log('✅ Screenshot captured successfully');
+            return screenshot;
+
+        } catch (error) {
+            console.error('❌ Screenshot error:', error);
+            return null;
+        }
+    }
+
+    async ensureDataLoaded() {
+        if (!this.cachedData) {
+            await this.fetchPPRData(1);
+        }
+    }
+
+    async getDetailData(pprId) {
+        try {
+            console.log(`🔍 Getting details for PPR ID: ${pprId}`);
+            
+            // Set larger viewport to accommodate modal
+            await this.page.setViewport({
+                width: 1920,
+                height: 1080,
+                deviceScaleFactor: 1
+            });
+
+            // Click detail button
+            const clicked = await this.page.evaluate((id) => {
+                const rows = document.querySelectorAll('.table tbody tr');
+                for (const row of rows) {
+                    const idCell = row.querySelector('td:nth-child(2)');
+                    if (idCell?.textContent?.trim() === id) {
+                        const detailBtn = row.querySelector('a.detail-doc-do, a.detail-doc-permintaan');
+                        if (detailBtn) {
+                            detailBtn.click();
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }, pprId);
+
+            if (!clicked) return null;
+
+            // Wait for modal and enhance its appearance
+            await this.page.waitForSelector('#DetailModal', { visible: true });
+            await this.page.evaluate(() => {
+                const modal = document.querySelector('#DetailModal .modal-dialog');
+                if (modal) {
+                    modal.style.maxWidth = '800px';
+                    modal.style.margin = '30px auto';
+                    modal.style.backgroundColor = 'white';
+                    document.body.style.backgroundColor = 'rgba(0,0,0,0.5)';
+                }
+            });
+
+            // Wait for all content to load
+            await new Promise(r => setTimeout(r, 1000));
+
+            // Get modal dimensions
+            const dimensions = await this.page.evaluate(() => {
+                const modal = document.querySelector('#DetailModal .modal-content');
+                if (!modal) return null;
+                const rect = modal.getBoundingClientRect();
+                return {
+                    x: rect.x,
+                    y: rect.y,
+                    width: rect.width,
+                    height: rect.height
+                };
+            });
+
+            if (!dimensions) return null;
+
+            // Take screenshot of just the modal
+            const screenshot = await this.page.screenshot({
+                type: 'png',
+                clip: {
+                    x: dimensions.x,
+                    y: dimensions.y,
+                    width: dimensions.width,
+                    height: dimensions.height
+                },
+                omitBackground: false
+            });
+
+            // Close modal
+            await this.page.evaluate(() => {
+                const closeBtn = document.querySelector('#DetailModal button.btn-close');
+                if (closeBtn) closeBtn.click();
+            });
+
+            return {
+                type: 'image',
+                data: screenshot,
+                caption: `😁 ᴅᴇᴛᴀɪʟ ᴘᴘʀ #${toSmallCaps(pprId)}`
+            };
+
+        } catch (error) {
+            console.error('❌ Detail fetch error:', error);
+            return null;
+        }
+    }
+
+    async checkNewOrders() {
+        try {
+            console.log('🔍 Checking for new orders...');
+            await this.page.goto(this.pprUrl, {
+                waitUntil: 'networkidle0',
+                timeout: 30000
+            });
+            
+            // Get current orders
+            const currentData = await this.page.evaluate(() => {
+                return Array.from(document.querySelectorAll('.table tbody tr'))
+                    .map(row => {
+                        const cells = row.querySelectorAll('td');
+                        return {
+                            number: cells[1]?.textContent.trim() || '',
+                            location: cells[2]?.textContent.trim() || '',
+                            date: cells[3]?.textContent.trim() || '',
+                            status: cells[4]?.textContent.trim() || ''
+                        };
+                    })
+                    .filter(item => item.status === 'Menunggu Konfirmasi');
+            });
+
+            // Check for new orders
+            if (!this.lastCheckedData) {
+                this.lastCheckedData = currentData;
+                return currentData;
+            }
+
+            // Find new orders
+            const newOrders = currentData.filter(current => 
+                !this.lastCheckedData.some(last => last.number === current.number)
+            );
+
+            // Update last checked data
+            this.lastCheckedData = currentData;
+
+            return newOrders;
+        } catch (error) {
+            console.error('❌ Error checking new orders:', error);
+            return [];
+        }
+    }
+
+    formatNewOrderNotification(orders) {
+        if (!orders || orders.length === 0) return null;
+
+        const header = `🔔 ɴᴇᴡ ʀᴇᴛᴀɪʟ ᴏʀᴅᴇʀs!\n\n`;
+        const items = orders.map(order => 
+            `📋 ᴏʀᴅᴇʀ #${toSmallCaps(order.number)}\n` +
+            `📍 ғʀᴏᴍ: ${toSmallCaps(order.location)}\n` +
+            `⏰ ᴅᴀᴛᴇ: ${toSmallCaps(order.date)}\n` +
+            `📊 sᴛᴀᴛᴜs: ${formatStatus(order.status)}`
+        ).join('\n\n');
+
+        return header + items;
+    }
+}
+
+module.exports = PPRChecker;
